@@ -172,7 +172,7 @@ def save_review_as_pdf(student_id, review_number, review_text, output_dir):
     # First save as text file
     txt_filepath = filepath.replace('.pdf', '.txt')
     with open(txt_filepath, 'w', encoding='utf-8') as f:
-        f.write(f"Peer Review {review_number} for {student_id}\n")
+        f.write(f"Peer Review for {student_id}\n")  # Anonymized: no review number
         f.write("=" * 60 + "\n\n")
         f.write(review_text)
     
@@ -214,8 +214,8 @@ def save_review_as_pdf(student_id, review_number, review_text, output_dir):
         styles = getSampleStyleSheet()
         story = []
         
-        # Add title
-        title = Paragraph(f"<b>Peer Review {review_number} for {student_id}</b>", styles['Heading1'])
+        # Add title - anonymized: no review number to prevent students from grouping reviews
+        title = Paragraph(f"<b>Peer Review for {student_id}</b>", styles['Heading1'])
         story.append(title)
         story.append(Spacer(1, 12))
         

@@ -388,7 +388,7 @@ def save_review_as_pdf(student_id, review_number, review_text, output_dir):
     # First save as text file - format matches human review exactly
     txt_filepath = filepath.replace('.pdf', '.txt')
     with open(txt_filepath, 'w', encoding='utf-8') as f:
-        f.write(f"Peer Review {review_number} for {student_id}\n")
+        f.write(f"Peer Review for {student_id}\n")  # Anonymized: no review number
         f.write("=" * 60 + "\n\n")
         # Note: AI reviews don't have "Reviewed by:" line, matching the format
         # Human reviews have it because it comes from CSV data
@@ -432,8 +432,8 @@ def save_review_as_pdf(student_id, review_number, review_text, output_dir):
         styles = getSampleStyleSheet()
         story = []
         
-        # Add title - use "Peer Review" to match human review format
-        title = Paragraph(f"<b>Peer Review {review_number} for {student_id}</b>", styles['Heading1'])
+        # Add title - anonymized: no review number to prevent students from grouping reviews
+        title = Paragraph(f"<b>Peer Review for {student_id}</b>", styles['Heading1'])
         story.append(title)
         story.append(Spacer(1, 12))
         
