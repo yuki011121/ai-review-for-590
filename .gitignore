@@ -1,0 +1,33 @@
+__pycache__/
+*.pyc
+*.pyo
+*.log
+
+# Virtual environments
+venv/
+.venv/
+
+# Editor/OS artifacts
+.DS_Store
+.vscode/
+.idea/
+
+# Python packaging / cache
+*.egg-info/
+.pytest_cache/
+
+# Secrets / configs
+.env
+.env.bak
+
+# Generated outputs
+reviews_original/
+reviews_blinded/
+feedback_packages/
+Master_Key.csv
+students.csv
+proposal_mapping.csv
+
+# Docker leftovers
+.dockerignore
+

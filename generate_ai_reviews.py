@@ -1,0 +1,526 @@
+#!/usr/bin/env python3
+"""
+Generate AI Reviews for Thesis Proposals
+This script reads proposal PDFs from the data/ directory, calls AI APIs to generate
+reviews, and saves them as PDF files following the naming convention.
+
+Requirements:
+- Proposals should be named as S01.pdf, S02.pdf, etc. in the data/ directory
+- Two AI reviews will be generated per proposal
+- Output files: S01_AI1.pdf, S01_AI2.pdf in reviews_original/ directory
+"""
+
+import os
+import sys
+import subprocess
+from pathlib import Path
+import json
+
+# Try to load from .env file if available
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass  # python-dotenv not installed, skip
+
+# --- Configuration ---
+PROPOSALS_DIR = "./data"
+OUTPUT_DIR = "./reviews_original"
+STUDENT_LIST_FILE = "students.csv"
+PROPOSAL_MAPPING_FILE = "proposal_mapping.csv"  # Maps PDF filename to Student ID (optional)
+
+# AI Configuration - Azure OpenAI / Azure AI Foundry (two deployments)
+# Model 1: GPT-4o (for AI Review 1)
+AZURE_ENDPOINT_1 = os.getenv("AZURE_ENDPOINT_1", "your-azure-endpoint-1")
+AZURE_API_KEY_1 = os.getenv("AZURE_API_KEY_1", "your-azure-api-key-1")
+AZURE_DEPLOYMENT_1 = os.getenv("AZURE_DEPLOYMENT_1", "gpt-4o-deployment")
+AZURE_API_VERSION_1 = os.getenv("AZURE_API_VERSION_1", "2024-02-15-preview")
+
+# Model 2: Llama-3.3-70B-Instruct (for AI Review 2)
+AZURE_ENDPOINT_2 = os.getenv("AZURE_ENDPOINT_2", "your-azure-endpoint-2")
+AZURE_API_KEY_2 = os.getenv("AZURE_API_KEY_2", "your-azure-api-key-2")
+AZURE_DEPLOYMENT_2 = os.getenv("AZURE_DEPLOYMENT_2", "llama-3.3-70b-deployment")
+AZURE_API_VERSION_2 = os.getenv("AZURE_API_VERSION_2", "2024-02-15-preview")
+
+# Backward compatibility (use Model 1 as default)
+AZURE_ENDPOINT = AZURE_ENDPOINT_1
+AZURE_API_KEY = AZURE_API_KEY_1
+AZURE_DEPLOYMENT = AZURE_DEPLOYMENT_1
+AZURE_API_VERSION = AZURE_API_VERSION_1
+
+# Review prompt template - natural, human-like writing style with first/second person
+REVIEW_PROMPT_TEMPLATE = """You are a graduate student providing peer review feedback on a Master's thesis proposal. Write as a real student reviewer would - naturally, using first person ("I", "my") and second person ("your", "you") when appropriate, expressing personal opinions and reactions.
+
+ABSOLUTE REQUIREMENTS - READ THIS FIRST:
+- Title & Abstract Quality: Write ONLY the number 1, 2, 3, 4, or 5. DO NOT write any descriptive words.
+- Introduction & Motivation: Write ONLY the number 1, 2, 3, 4, or 5. DO NOT write any descriptive words.
+- Background & Related Work: Write ONLY the number 1, 2, 3, 4, or 5. DO NOT write any descriptive words.
+- Thesis Question / Hypothesis & Contribution: Write ONLY the number 1, 2, 3, 4, or 5. DO NOT write "High", "Moderate", "Low", or any other word.
+- Methodology, Design & Validation: Write ONLY the number 1, 2, 3, 4, or 5. DO NOT write "Good", "High", "Moderate", "Feasible", or any other word.
+- Schedule & Feasibility: Write ONLY the number 1, 2, 3, 4, or 5. DO NOT write "Moderate", "Feasible", "Realistic", or any other word.
+- Clarity & Style: Write ONLY the number 1, 2, 3, 4, or 5. DO NOT write any descriptive words.
+- Formatting & References: Write ONLY the number 1, 2, 3, 4, or 5. DO NOT write "Accept", "Accept (Minor revisions required)", or any other text.
+- Rate the potential impact/significance of the proposed research: Write ONLY the number 1, 2, 3, 4, or 5. DO NOT write "Low", "Moderate", "High", "Very High", or any other text.
+
+- Use PLAIN TEXT only - NO markdown formatting (no **, no #, no bullets, no numbered lists)
+- ABSOLUTELY NO HYPHENS ( - ) anywhere in your response unless it is part of a proper noun or technical term that officially requires it. This applies to every compound word and descriptive phrase. Always rewrite as separate words. Examples: "up to date" NOT "up-to-date", "well written" NOT "well-written", "state of the art" NOT "state-of-the-art".
+- ZERO-HYPHEN FINAL CHECK: Before you submit your response, scan what you wrote for the "-" character. If you find even one hyphen, rewrite that word or phrase with spaces so there are absolutely zero hyphens when you are done.
+- The ONLY exception is proper nouns or technical terms that MUST have hyphens (e.g., "ML-Agents" as a framework name)
+- Match the exact structure of human peer reviews from Google Forms
+- Do NOT include section numbers, headers like "1.", "2.", etc., or any introductory text
+- Start directly with "General Impression & Summary:"
+- Use "  - " (two spaces and dash) for explanations under each section
+- Each section should have ONLY ONE explanation block starting with "  - "
+- Write naturally - don't make every sentence perfect. Use varied sentence structures.
+
+WRITING STYLE GUIDELINES (to sound more human):
+- USE FIRST PERSON when expressing personal reactions: "I was surprised...", "I found...", "I think...", "I am curious about...", "I especially liked..."
+- USE SECOND PERSON when addressing the author: "your proposal", "your work", "you could..."
+- EXPLANATION LENGTH should vary based on interest:
+  * For routine/basic sections: 1-2 sentences
+  * For interesting sections: 2-3 sentences
+  * For very interesting/notable sections: 3-5 sentences
+  * Additional Comments: Usually 2-3 sentences if there are comments
+- Express personal reactions and opinions naturally
+- Use varied vocabulary - don't repeat the same phrases
+- Occasionally use slightly informal language (e.g., "could use", "needs more", "pretty good", "I was impressed")
+- Some explanations can be longer or shorter - not all need to be perfectly balanced
+- It's okay to have minor redundancy or slightly awkward phrasing occasionally
+- Use natural transitions and varied sentence beginnings
+- Don't make every comment sound like a polished academic statement
+- Mix of specific technical comments and general observations with personal reactions
+- NEVER use hyphens to join words - always write them as separate words (e.g., "well thought out", "real world", "multi agent", "state of the art", "cutting edge", "well suited", "agent based", "reinforcement based", "real time", "cutting edge")
+- If you need to describe something, use separate words: "agent based modeling" NOT "agent-based modeling", "well suited" NOT "well-suited"
+
+MANDATORY VALUE RESTRICTIONS (you MUST follow these exactly):
+- Title & Abstract Quality: MUST be an integer from 1 to 5 (e.g., "4", "5")
+- Introduction & Motivation: MUST be an integer from 1 to 5
+- Background & Related Work: MUST be an integer from 1 to 5
+- Thesis Question / Hypothesis & Contribution: MUST be an integer from 1 to 5 (e.g., "3", "4", "5") - NOT descriptive words like "High", "Moderate", "Low", etc. ONLY integers 1, 2, 3, 4, or 5.
+- Methodology, Design & Validation: MUST be an integer from 1 to 5 (e.g., "3", "4", "5") - NOT descriptive words like "Good", "High", "Moderate", "Feasible", etc. ONLY integers 1, 2, 3, 4, or 5.
+- Schedule & Feasibility: MUST be an integer from 1 to 5 (e.g., "3", "4", "5") - NOT descriptive words like "Moderate", "Feasible", "Realistic", etc. ONLY integers 1, 2, 3, 4, or 5.
+- Clarity & Style: MUST be an integer from 1 to 5 (e.g., "3", "4", "5") - NOT descriptive words. ONLY integers 1, 2, 3, 4, or 5.
+- Formatting & References: MUST be an integer from 1 to 5 (e.g., "3", "4", "5") - NOT text like "Accept", "Accept (Minor revisions required)", etc. ONLY integers 1, 2, 3, 4, or 5.
+- Overall Recommendation for the Proposal's Outcome: MUST be one of these EXACT options:
+  * "Strongly Accept (No changes needed)"
+  * "Accept (Minor revisions required)"
+  * "Borderline (Major revisions required)"
+  * "Reject (Fundamental issues)"
+- Rate the potential impact/significance of the proposed research: MUST be an integer from 1 to 5 (e.g., "3", "4", "5") - NOT text like "Low", "Moderate", "High", "Very High", etc. ONLY integers 1, 2, 3, 4, or 5.
+- Assess the novelty and originality of the following aspects: [Research Question/Hypothesis]: MUST be "Low", "Moderate", or "High"
+- Assess the novelty and originality of the following aspects: [Proposed Methodology]: MUST be "Low", "Moderate", or "High"
+- Assess the novelty and originality of the following aspects: [Potential Contribution]: MUST be "Low", "Moderate", or "High"
+
+Format your response EXACTLY as follows (note: for General Impression, Major Strengths, Key Areas for Improvement, and Additional Comments, put the question on one line and the answer on the next line):
+
+General Impression & Summary:
+[2-4 sentences expressing your overall reaction, using first person when appropriate - e.g., "I was surprised this is only a proposal. It already feels very complete and engaging. The work focuses on... The topic is both timely and important."]
+
+Major Strengths:
+[2-3 sentences describing strengths, can use "I found", "I especially liked", "your work shows..."]
+
+Key Areas for Improvement:
+[1-2 sentences about areas needing work, can use "your proposal could...", "I noticed..."]
+
+Title & Abstract Quality: [MUST be integer 1-5]
+  - [1-3 sentences depending on how notable this section is. Use first/second person naturally. E.g., "The title and abstract are excellent. The title clearly states the research focus. The abstract gives a full overview..."]
+
+Introduction & Motivation: [MUST be integer 1-5]
+  - [1-3 sentences with personal reaction if notable]
+
+Background & Related Work: [MUST be integer 1-5]
+  - [2-4 sentences if this section is interesting or notable. E.g., "The Related Work section is a highlight. The author reviews several representative studies, explains their methods, and points out their weaknesses. This section shows solid understanding and analytical thinking."]
+
+Thesis Question / Hypothesis & Contribution: [MUST be ONLY integer 1, 2, 3, 4, or 5 - NOT "High", "Moderate", "Low", etc.]
+  - [2-4 sentences if interesting. E.g., "The proposed contributions are listed in bullet points, which makes them clear and easy to read. I am especially curious about the last contribution, where the author plans to... That idea is both interesting and challenging."]
+  Example: "Thesis Question / Hypothesis & Contribution: 4"
+
+Methodology, Design & Validation: [MUST be ONLY integer 1, 2, 3, 4, or 5 - NOT "Good", "High", "Moderate", etc.]
+  - [2-3 sentences with your assessment]
+  Example: "Methodology, Design & Validation: 4"
+
+Schedule & Feasibility: [MUST be ONLY integer 1, 2, 3, 4, or 5 - NOT "Moderate", "Feasible", "Realistic", etc.]
+  - [1-2 sentences, can be brief unless there are concerns]
+  Example: "Schedule & Feasibility: 4"
+
+Clarity & Style: [MUST be ONLY integer 1, 2, 3, 4, or 5 - NOT descriptive words]
+  - [1-2 sentences about writing quality]
+  Example: "Clarity & Style: 4"
+
+Formatting & References: [MUST be ONLY integer 1, 2, 3, 4, or 5 - NOT "Accept", "Accept (Minor revisions required)", etc.]
+  Example: "Formatting & References: 3"
+
+Overall Recommendation for the Proposal's Outcome: [MUST be one of: "Strongly Accept (No changes needed)", "Accept (Minor revisions required)", "Borderline (Major revisions required)", "Reject (Fundamental issues)"]
+
+Rate the potential impact/significance of the proposed research: [MUST be ONLY integer 1, 2, 3, 4, or 5 - NOT "Low", "Moderate", "High", "Very High", etc.]
+  Example: "Rate the potential impact/significance of the proposed research: 4"
+
+Assess the novelty and originality of the following aspects: [Research Question/Hypothesis]: [MUST be "Low", "Moderate", or "High"]
+
+Assess the novelty and originality of the following aspects: [Proposed Methodology]: [MUST be "Low", "Moderate", or "High"]
+
+Assess the novelty and originality of the following aspects: [Potential Contribution]: [MUST be "Low", "Moderate", or "High"]
+
+Additional Comments for the Author:
+[2-3 sentences if you have comments, expressing your overall reaction. E.g., "This is an outstanding proposal. It could serve as an example for other students. Reading it gave me ideas on how to improve my own proposal. Excellent work." OR "None." if no additional comments]
+
+CRITICAL REMINDERS - YOU MUST FOLLOW THESE EXACTLY (THESE ARE MANDATORY, NOT OPTIONAL):
+1. Title & Abstract Quality: MUST be ONLY an integer 1, 2, 3, 4, or 5. NEVER use descriptive words. Write ONLY the number, e.g., "Title & Abstract Quality: 4"
+2. Introduction & Motivation: MUST be ONLY an integer 1, 2, 3, 4, or 5. NEVER use descriptive words. Write ONLY the number, e.g., "Introduction & Motivation: 4"
+3. Background & Related Work: MUST be ONLY an integer 1, 2, 3, 4, or 5. NEVER use descriptive words. Write ONLY the number, e.g., "Background & Related Work: 4"
+4. Thesis Question / Hypothesis & Contribution: MUST be ONLY an integer 1, 2, 3, 4, or 5. NEVER use words like "High", "Moderate", "Low", etc. Write ONLY the number, e.g., "Thesis Question / Hypothesis & Contribution: 4"
+5. Methodology, Design & Validation: MUST be ONLY an integer 1, 2, 3, 4, or 5. NEVER use words like "Good", "High", "Moderate", "Feasible", etc. Write ONLY the number, e.g., "Methodology, Design & Validation: 4"
+6. Schedule & Feasibility: MUST be ONLY an integer 1, 2, 3, 4, or 5. NEVER use words like "Moderate", "Feasible", "Realistic", etc. Write ONLY the number, e.g., "Schedule & Feasibility: 4"
+7. Clarity & Style: MUST be ONLY an integer 1, 2, 3, 4, or 5. NEVER use descriptive words. Write ONLY the number, e.g., "Clarity & Style: 4"
+8. Formatting & References: MUST be ONLY an integer 1, 2, 3, 4, or 5. NEVER use text like "Accept", "Accept (Minor revisions required)", etc. Write ONLY the number, e.g., "Formatting & References: 3"
+9. Rate the potential impact/significance of the proposed research: MUST be ONLY an integer 1, 2, 3, 4, or 5. NEVER use text like "Low", "Moderate", "High", "Very High", etc. Write ONLY the number, e.g., "Rate the potential impact/significance of the proposed research: 4"
+
+If you use any word instead of a number for these fields, your response is WRONG and will be rejected.
+
+Remember: Write as a real graduate student would - use "I" and "you/your" naturally, express personal reactions and opinions, vary explanation length based on how interesting each section is to you. Don't make it sound like a polished academic paper. Keep it constructive but human and personal. Follow ALL value restrictions exactly for the ratings and options. For all rating fields (Title & Abstract Quality, Introduction & Motivation, Background & Related Work, Thesis Question / Hypothesis & Contribution, Methodology, Schedule, Clarity & Style, Formatting & References, and Impact/Significance), use ONLY integers 1-5, nothing else.
+"""
+
+# --- End Configuration ---
+
+def load_students():
+    """Load student IDs from students.csv"""
+    try:
+        import pandas as pd
+        df = pd.read_csv(STUDENT_LIST_FILE)
+        return df['student_id'].astype(str).str.strip().tolist()
+    except FileNotFoundError:
+        print(f"Warning: {STUDENT_LIST_FILE} not found. Will scan {PROPOSALS_DIR} for PDF files.")
+        return None
+    except Exception as e:
+        print(f"Warning: Could not load {STUDENT_LIST_FILE}: {e}")
+        return None
+
+def load_proposal_mapping():
+    """Load mapping from PDF filename to Student ID"""
+    mapping = {}
+    if os.path.exists(PROPOSAL_MAPPING_FILE):
+        try:
+            import pandas as pd
+            df = pd.read_csv(PROPOSAL_MAPPING_FILE)
+            for _, row in df.iterrows():
+                filename = str(row.get('Proposal_Filename', '')).strip()
+                student_id = str(row.get('Student_ID', '')).strip()
+                if filename and student_id:
+                    mapping[filename] = student_id
+            print(f"✓ Loaded {len(mapping)} mappings from {PROPOSAL_MAPPING_FILE}")
+        except Exception as e:
+            print(f"Warning: Could not load {PROPOSAL_MAPPING_FILE}: {e}")
+    return mapping
+
+def find_proposal_files():
+    """Find all proposal PDF files in the data directory"""
+    proposals_dir = Path(PROPOSALS_DIR)
+    if not proposals_dir.exists():
+        print(f"ERROR: Directory {PROPOSALS_DIR} not found.")
+        return []
+    
+    # Load mapping if available
+    mapping = load_proposal_mapping()
+    
+    # Find all PDF files
+    proposal_files = []
+    for pdf_file in proposals_dir.glob("*.pdf"):
+        filename = pdf_file.name
+        
+        # Try to get Student ID from mapping first
+        if filename in mapping:
+            student_id = mapping[filename]
+        elif filename.startswith("S") and len(filename.split("_")[0]) <= 5:
+            # Standard format: S01.pdf or S01_something.pdf
+            student_id = filename.split("_")[0].replace(".pdf", "")
+        else:
+            # Use filename as student ID (will need manual mapping)
+            student_id = pdf_file.stem
+            print(f"⚠ Warning: {filename} doesn't match standard format. Using '{student_id}' as Student ID.")
+            print(f"   Consider adding to {PROPOSAL_MAPPING_FILE}")
+        
+        proposal_files.append((student_id, pdf_file))
+    
+    return sorted(proposal_files)
+
+def extract_text_from_pdf(pdf_path):
+    """
+    Extract text from PDF file.
+    You may need to install: pip install pypdf2 or pip install pdfplumber
+    """
+    try:
+        import PyPDF2
+        with open(pdf_path, 'rb') as file:
+            reader = PyPDF2.PdfReader(file)
+            text = ""
+            for page in reader.pages:
+                text += page.extract_text() + "\n"
+        return text
+    except ImportError:
+        try:
+            import pdfplumber
+            with pdfplumber.open(pdf_path) as pdf:
+                text = ""
+                for page in pdf.pages:
+                    text += page.extract_text() + "\n"
+            return text
+        except ImportError:
+            print("ERROR: Need either PyPDF2 or pdfplumber installed.")
+            print("Install with: pip install pypdf2 or pip install pdfplumber")
+            return None
+    except Exception as e:
+        print(f"ERROR: Could not extract text from {pdf_path}: {e}")
+        return None
+
+def call_ai_api(prompt, proposal_text, review_number, student_id):
+    """
+    Call AI API to generate review.
+    Review 1 uses GPT-4o, Review 2 uses Llama-3.3-70B-Instruct
+    """
+    
+    full_prompt = f"{prompt}\n\nProposal Content:\n{proposal_text[:8000]}"
+    
+    # Review 1 uses GPT-4o
+    if review_number == 1:
+        print(f"  Using GPT-4o (Endpoint: {AZURE_ENDPOINT_1[:50]}...)")
+        return call_azure_openai(
+            full_prompt,
+            AZURE_ENDPOINT_1,
+            AZURE_API_KEY_1,
+            AZURE_DEPLOYMENT_1,
+            AZURE_API_VERSION_1
+        )
+    # Review 2 uses Llama-3.3-70B-Instruct
+    else:
+        print(f"  Using Llama-3.3-70B (Endpoint: {AZURE_ENDPOINT_2[:50]}...)")
+        return call_azure_openai(
+            full_prompt,
+            AZURE_ENDPOINT_2,
+            AZURE_API_KEY_2,
+            AZURE_DEPLOYMENT_2,
+            AZURE_API_VERSION_2
+        )
+
+def call_azure_openai(prompt, endpoint, api_key, deployment, api_version):
+    """Call Azure OpenAI/AI Foundry API with specific configuration"""
+    try:
+        from openai import AzureOpenAI
+        
+        # Handle different endpoint formats
+        # Format 1: https://xxx.openai.azure.com/ (standard Azure OpenAI)
+        # Format 2: https://xxx.services.ai.azure.com/models/... (Azure AI Foundry)
+        if "services.ai.azure.com" in endpoint:
+            # Azure AI Foundry format
+            # Extract base URL: https://xxx.services.ai.azure.com
+            if "/models/" in endpoint:
+                base_url = endpoint.split("/models/")[0]
+            elif "?" in endpoint:
+                base_url = endpoint.split("?")[0].rstrip('/')
+            else:
+                base_url = endpoint.rstrip('/')
+            
+            azure_endpoint = base_url
+            # For Foundry, use the deployment name as provided
+            actual_deployment = deployment
+        else:
+            # Standard Azure OpenAI format
+            azure_endpoint = endpoint.rstrip('/')
+            actual_deployment = deployment
+        
+        client = AzureOpenAI(
+            api_key=api_key,
+            api_version=api_version,
+            azure_endpoint=azure_endpoint
+        )
+        
+        response = client.chat.completions.create(
+            model=actual_deployment,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.7,
+            max_tokens=4000  # Ensure we get full response
+        )
+        return response.choices[0].message.content
+    except ImportError:
+        print("ERROR: Need openai library. Install with: pip install openai")
+        return None
+    except Exception as e:
+        print(f"ERROR calling Azure OpenAI/AI Foundry: {e}")
+        print(f"  Endpoint: {endpoint}")
+        print(f"  Deployment: {deployment}")
+        print(f"  Base URL used: {azure_endpoint if 'azure_endpoint' in locals() else 'N/A'}")
+        import traceback
+        traceback.print_exc()
+        return None
+
+def save_review_as_pdf(student_id, review_number, review_text, output_dir):
+    """Save review text as PDF file - format matches human review format"""
+    os.makedirs(output_dir, exist_ok=True)
+    
+    filename = f"{student_id}_AI{review_number}.pdf"
+    filepath = os.path.join(output_dir, filename)
+    
+    # First save as text file - format matches human review exactly
+    txt_filepath = filepath.replace('.pdf', '.txt')
+    with open(txt_filepath, 'w', encoding='utf-8') as f:
+        f.write(f"Peer Review {review_number} for {student_id}\n")
+        f.write("=" * 60 + "\n\n")
+        # Note: AI reviews don't have "Reviewed by:" line, matching the format
+        # Human reviews have it because it comes from CSV data
+        f.write(review_text)
+    
+    # Try multiple methods to convert to PDF
+    # Method 1: Try pandoc with pdflatex
+    try:
+        result = subprocess.run(
+            ['pandoc', txt_filepath, '-o', filepath, '--pdf-engine=pdflatex'],
+            check=True,
+            capture_output=True,
+            text=True
+        )
+        os.remove(txt_filepath)  # Remove temp txt file
+        return True, filepath
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        pass
+    
+    # Method 2: Try pandoc with other engines
+    for engine in ['xelatex', 'lualatex', 'wkhtmltopdf']:
+        try:
+            result = subprocess.run(
+                ['pandoc', txt_filepath, '-o', filepath, f'--pdf-engine={engine}'],
+                check=True,
+                capture_output=True,
+                text=True
+            )
+            os.remove(txt_filepath)
+            return True, filepath
+        except (subprocess.CalledProcessError, FileNotFoundError):
+            continue
+    
+    # Method 3: Try using Python reportlab (if available)
+    try:
+        from reportlab.lib.pagesizes import letter
+        from reportlab.lib.styles import getSampleStyleSheet
+        from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
+        
+        doc = SimpleDocTemplate(filepath, pagesize=letter)
+        styles = getSampleStyleSheet()
+        story = []
+        
+        # Add title - use "Peer Review" to match human review format
+        title = Paragraph(f"<b>Peer Review {review_number} for {student_id}</b>", styles['Heading1'])
+        story.append(title)
+        story.append(Spacer(1, 12))
+        
+        # Add content (split by lines, handle special characters)
+        for line in review_text.split('\n'):
+            if line.strip():
+                # Escape HTML special characters
+                escaped_line = (line.replace('&', '&amp;')
+                               .replace('<', '&lt;')
+                               .replace('>', '&gt;'))
+                para = Paragraph(escaped_line, styles['Normal'])
+                story.append(para)
+                story.append(Spacer(1, 6))
+        
+        doc.build(story)
+        os.remove(txt_filepath)
+        return True, filepath
+    except Exception as e:
+        # ReportLab failed, will keep as txt
+        pass
+    
+    # If all methods fail, keep as txt
+    return False, txt_filepath
+
+def generate_reviews_for_student(student_id, proposal_path):
+    """Generate two AI reviews for a single student's proposal"""
+    print(f"\nProcessing {student_id}...")
+    
+    # Extract text from PDF
+    print(f"  Reading {proposal_path.name}...")
+    proposal_text = extract_text_from_pdf(proposal_path)
+    
+    if not proposal_text:
+        print(f"  ✗ Failed to extract text from {proposal_path}")
+        return False
+    
+    print(f"  ✓ Extracted {len(proposal_text)} characters")
+    
+    # Generate two reviews
+    success_count = 0
+    for review_num in [1, 2]:
+        print(f"  Generating AI review {review_num}...")
+        
+        review_text = call_ai_api(
+            REVIEW_PROMPT_TEMPLATE,
+            proposal_text,
+            review_num,
+            student_id
+        )
+        
+        if not review_text:
+            print(f"  ✗ Failed to generate review {review_num}")
+            continue
+        
+        # Save as PDF
+        is_pdf, filepath = save_review_as_pdf(student_id, review_num, review_text, OUTPUT_DIR)
+        if is_pdf:
+            print(f"  ✓ Saved {student_id}_AI{review_num}.pdf")
+            success_count += 1
+        else:
+            print(f"  ✓ Saved {student_id}_AI{review_num}.txt (convert to PDF manually)")
+            success_count += 1
+    
+    return success_count == 2
+
+def main():
+    print("=" * 70)
+    print("AI Review Generator for Thesis Proposals")
+    print("=" * 70)
+    
+    # Find proposal files
+    proposal_files = find_proposal_files()
+    
+    if not proposal_files:
+        print(f"\nNo proposal files found in {PROPOSALS_DIR}")
+        print("Expected format: S01.pdf, S02.pdf, etc.")
+        return
+    
+    print(f"\nFound {len(proposal_files)} proposal file(s):")
+    for student_id, path in proposal_files:
+        print(f"  - {student_id}: {path.name}")
+    
+    # Confirm before proceeding (skip if running non-interactively)
+    print(f"\nThis will generate 2 AI reviews for each proposal ({len(proposal_files) * 2} total reviews)")
+    try:
+        response = input("Continue? (y/n): ")
+        if response.lower() != 'y':
+            print("Cancelled.")
+            return
+    except EOFError:
+        # Running non-interactively, proceed automatically
+        print("Running non-interactively, proceeding automatically...")
+    
+    # Generate reviews
+    print("\n" + "=" * 70)
+    print("Generating Reviews")
+    print("=" * 70)
+    
+    success_count = 0
+    for student_id, proposal_path in proposal_files:
+        if generate_reviews_for_student(student_id, proposal_path):
+            success_count += 1
+    
+    print("\n" + "=" * 70)
+    print("Summary")
+    print("=" * 70)
+    print(f"✓ Successfully processed: {success_count}/{len(proposal_files)} students")
+    print(f"✓ Generated {success_count * 2} review files in {OUTPUT_DIR}/")
+    print("\nNext steps:")
+    print("1. Teacher will add human reviews (H1, H2) to the same directory")
+    print("2. Run: python3 generate_master_key.py")
+    print("3. Run: ./rename_and_distribute.sh")
+
+if __name__ == "__main__":
+    main()
+
