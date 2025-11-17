@@ -15,6 +15,8 @@ import sys
 import subprocess
 from pathlib import Path
 import json
+import csv
+import pandas as pd
 
 # Try to load from .env file if available
 try:
@@ -352,6 +354,30 @@ def call_azure_openai(prompt, endpoint, api_key, deployment, api_version):
         traceback.print_exc()
         return None
 
+def update_proposal_mapping_reviewer(student_id, source_id, reviewer_name):
+    """Update proposal_mapping.csv with reviewer information"""
+    if not os.path.exists(PROPOSAL_MAPPING_FILE):
+        return
+    
+    try:
+        df = pd.read_csv(PROPOSAL_MAPPING_FILE)
+        
+        # Add reviewer columns if they don't exist
+        for col in ['H1_Reviewer', 'H2_Reviewer', 'AI1_Reviewer', 'AI2_Reviewer']:
+            if col not in df.columns:
+                df[col] = ''
+        
+        # Find the row for this student and update the appropriate reviewer column
+        mask = df['Student_ID'] == student_id
+        if mask.any():
+            # Convert to string type to avoid dtype warnings
+            df[f'{source_id}_Reviewer'] = df[f'{source_id}_Reviewer'].astype(str)
+            df.loc[mask, f'{source_id}_Reviewer'] = reviewer_name
+            df.to_csv(PROPOSAL_MAPPING_FILE, index=False)
+    except Exception as e:
+        print(f"Warning: Could not update reviewer in {PROPOSAL_MAPPING_FILE}: {e}")
+
+
 def save_review_as_pdf(student_id, review_number, review_text, output_dir):
     """Save review text as PDF file - format matches human review format"""
     os.makedirs(output_dir, exist_ok=True)
@@ -464,6 +490,9 @@ def generate_reviews_for_student(student_id, proposal_path):
         
         # Save as PDF
         is_pdf, filepath = save_review_as_pdf(student_id, review_num, review_text, OUTPUT_DIR)
+        reviewer_name = "GPT-4o" if review_num == 1 else "Llama-3.3-70B"
+        update_proposal_mapping_reviewer(student_id, f"AI{review_num}", reviewer_name)
+
         if is_pdf:
             print(f"  ✓ Saved {student_id}_AI{review_num}.pdf")
             success_count += 1

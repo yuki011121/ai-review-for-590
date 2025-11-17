@@ -9,11 +9,13 @@ import csv
 import random
 import os
 import sys
+import pandas as pd
 
 # --- Configuration ---
 STUDENT_LIST_FILE = "students.csv"
 MASTER_KEY_OUTPUT_FILE = "Master_Key.csv"
 SOURCE_DIR = "./reviews_original"
+PROPOSAL_MAPPING_FILE = "proposal_mapping.csv"
 
 # Define internal source identifiers and their true source type
 # 2 Human reviews + 2 AI reviews (4 total per student)
@@ -30,6 +32,31 @@ PUBLIC_REVIEW_NAMES = [f"Review_{i}" for i in range(1, len(SOURCE_TYPES) + 1)]
 # Optional: Set random seed for reproducibility during testing
 # random.seed(42)  # Uncomment for deterministic results
 # --- End Configuration ---
+
+def load_reviewer_mapping():
+    """Load reviewer information from proposal_mapping.csv"""
+    mapping = {}
+    if os.path.exists(PROPOSAL_MAPPING_FILE):
+        try:
+            df = pd.read_csv(PROPOSAL_MAPPING_FILE)
+            for _, row in df.iterrows():
+                student_id = str(row.get('Student_ID', '')).strip()
+                if not student_id:
+                    continue
+                
+                # Check for reviewer columns (H1_Reviewer, H2_Reviewer, AI1_Reviewer, AI2_Reviewer)
+                for source_id in ['H1', 'H2', 'AI1', 'AI2']:
+                    reviewer_col = f'{source_id}_Reviewer'
+                    if reviewer_col in df.columns:
+                        reviewer = str(row.get(reviewer_col, '')).strip()
+                        if reviewer:
+                            mapping[(student_id, source_id)] = reviewer
+        except Exception as e:
+            print(f"Warning: Unable to read reviewer info from {PROPOSAL_MAPPING_FILE}: {e}")
+    else:
+        print(f"Warning: {PROPOSAL_MAPPING_FILE} not found. Reviewer names will be blank.")
+    return mapping
+
 
 def validate_review_files(student_ids):
     """
@@ -89,6 +116,8 @@ def generate_and_randomize_key():
         sys.exit(1)
     
     print(f"File validation successful: All {len(student_ids) * len(SOURCE_TYPES)} review files found.")
+
+    reviewer_mapping = load_reviewer_mapping()
     
     # 3. Iterate through students and generate randomized assignments
     for student_id in student_ids:
@@ -107,15 +136,29 @@ def generate_and_randomize_key():
             # Internal filename (used by the subsequent shell script)
             internal_filename = f"{student_id}_{internal_id}.pdf"
             
+            # Determine reviewer name based on source type
+            if internal_id in ["H1", "H2"]:
+                # Human reviews: look up from proposal_mapping.csv
+                reviewer_name = reviewer_mapping.get((student_id, internal_id), "")
+            elif internal_id == "AI1":
+                # AI Review 1: use "gpt"
+                reviewer_name = "gpt"
+            elif internal_id == "AI2":
+                # AI Review 2: use "llama"
+                reviewer_name = "llama"
+            else:
+                reviewer_name = ""
+
             master_key_data.append({
                 "Student_ID": student_id,
                 "Internal_Name": internal_filename,
                 "True_Source": true_source,
-                "Public_Review_Name": public_name
+                "Public_Review_Name": public_name,
+                "Reviewer_Name": reviewer_name
             })
     
     # 5. Write the Master Key CSV file
-    fieldnames = ["Student_ID", "Internal_Name", "True_Source", "Public_Review_Name"]
+    fieldnames = ["Student_ID", "Internal_Name", "True_Source", "Public_Review_Name", "Reviewer_Name"]
     with open(MASTER_KEY_OUTPUT_FILE, mode='w', newline='') as outfile:
         writer = csv.DictWriter(outfile, fieldnames=fieldnames)
         writer.writeheader()

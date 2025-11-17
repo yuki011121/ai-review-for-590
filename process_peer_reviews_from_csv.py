@@ -14,6 +14,7 @@ import os
 import sys
 import subprocess
 import re
+import csv
 from pathlib import Path
 
 # --- Configuration ---
@@ -80,7 +81,8 @@ def analyze_csv_structure(csv_file):
                 key_cols['proposal_id'] = col
             elif 'proposal' in col_lower and 'title' in col_lower:
                 key_cols['proposal_title'] = col
-            elif 'reviewer' in col_lower or 'name' in col_lower:
+            elif 'reviewer' in col_lower:
+                # Prioritize columns with 'reviewer' in the name
                 key_cols['reviewer'] = col
             elif 'email' in col_lower:
                 key_cols['email'] = col
@@ -238,6 +240,30 @@ def save_review_as_pdf(student_id, review_number, review_text, output_dir):
     # If all methods fail, keep as txt
     return False, txt_filepath
 
+def update_proposal_mapping_reviewer(student_id, source_id, reviewer_name):
+    """Update proposal_mapping.csv with reviewer information"""
+    if not os.path.exists(PROPOSAL_MAPPING_FILE):
+        return
+    
+    try:
+        df = pd.read_csv(PROPOSAL_MAPPING_FILE)
+        
+        # Add reviewer columns if they don't exist
+        for col in ['H1_Reviewer', 'H2_Reviewer', 'AI1_Reviewer', 'AI2_Reviewer']:
+            if col not in df.columns:
+                df[col] = ''
+        
+        # Find the row for this student and update the appropriate reviewer column
+        mask = df['Student_ID'] == student_id
+        if mask.any():
+            # Convert to string type to avoid dtype warnings
+            df[f'{source_id}_Reviewer'] = df[f'{source_id}_Reviewer'].astype(str)
+            df.loc[mask, f'{source_id}_Reviewer'] = reviewer_name
+            df.to_csv(PROPOSAL_MAPPING_FILE, index=False)
+    except Exception as e:
+        print(f"Warning: Could not update reviewer in {PROPOSAL_MAPPING_FILE}: {e}")
+
+
 def process_reviews():
     """Main function to process reviews from CSV"""
     print("=" * 70)
@@ -269,7 +295,8 @@ def process_reviews():
         return
     
     proposal_title_col = key_cols.get('proposal_title')
-    
+    reviewer_col = key_cols.get('reviewer')
+
     proposal_id_col = key_cols['proposal_id']
     reviews_by_proposal = {}
     
@@ -295,10 +322,15 @@ def process_reviews():
         
         # Extract review content
         review_content = extract_review_content(row, df)
+        reviewer_name = ""
+        if reviewer_col:
+            reviewer_name = str(row.get(reviewer_col, "")).strip()
+
         reviews_by_proposal[student_id].append({
             'content': review_content,
             'proposal_id': proposal_id,
-            'row': row
+            'row': row,
+            'reviewer_name': reviewer_name
         })
     
     print(f"\n✓ Found reviews for {len(reviews_by_proposal)} students")
@@ -315,10 +347,12 @@ def process_reviews():
             continue
         elif len(reviews) < 2:
             print(f"⚠ {student_id}: Only 1 review found — duplicating for H2")
+            base_name = reviews[0].get('reviewer_name') or "Peer Reviewer 1"
             duplicated = {
                 'content': reviews[0]['content'] + "\n\n[Note: Only one human review was submitted. This is a duplicate of Review 1 so that the workflow retains four total reviews.]",
                 'proposal_id': reviews[0]['proposal_id'],
-                'row': reviews[0]['row']
+                'row': reviews[0]['row'],
+                'reviewer_name': f"{base_name} (Duplicate of Review 1)"
             }
             reviews = reviews + [duplicated]
         
@@ -328,6 +362,9 @@ def process_reviews():
                 student_id, i, review['content'], OUTPUT_DIR
             )
             
+            reviewer_name = review.get('reviewer_name') or f"Peer Reviewer {i}"
+            update_proposal_mapping_reviewer(student_id, f"H{i}", reviewer_name)
+
             if is_pdf:
                 print(f"✓ {student_id}_H{i}.pdf")
                 success_count += 1

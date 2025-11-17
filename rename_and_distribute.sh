@@ -36,12 +36,13 @@ TOTAL_FILES=$(tail -n +2 "$MASTER_KEY_FILE" | wc -l)
 PROCESSED=0
 
 # Skip the header row and read the Master Key CSV line by line
-tail -n +2 "$MASTER_KEY_FILE" | while IFS=, read -r student_id internal_name true_source public_review_name; do
+tail -n +2 "$MASTER_KEY_FILE" | while IFS=, read -r student_id internal_name true_source public_review_name reviewer_name; do
     
     # Trim whitespace for accurate file matching
     student_id=$(echo "$student_id" | xargs)
     internal_name=$(echo "$internal_name" | xargs)
     public_review_name=$(echo "$public_review_name" | xargs)
+    # Note: reviewer_name is read but not used in filename (for anonymity)
     
     # Construct paths
     SOURCE_PATH="${SOURCE_DIR}/${internal_name}"

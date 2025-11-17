@@ -78,14 +78,16 @@ ai-review-for-590/
    ```bash
    python3 process_peer_reviews_from_csv.py
    ```
-   - Reads the Google Sheets export in `csv/`.
+   - Reads the Google Sheets export in `csv/` (looks for "Reviewer: First Name Last Name" column).
    - Uses both `Proposal ID` and (if needed) proposal titles to map each review to the correct student.
    - Renders `SXX_H1.pdf` + `SXX_H2.pdf` in `reviews_original/` (uses pandoc/TeX or ReportLab fallback). If a proposal only has one peer review submission, the script duplicates it for `H2` and adds a note so the downstream pipeline still has four total reviews.
+   - Automatically updates `proposal_mapping.csv` with reviewer names in `H1_Reviewer` and `H2_Reviewer` columns.
 4. **Generate AI reviews**
    ```bash
    python3 generate_ai_reviews.py
    ```
    - Reads every PDF in `data/`, extracts text, prompts GPT-4o (AI1) and Llama 3.3 (AI2), writes `SXX_AI1.pdf` / `SXX_AI2.pdf`.
+   - Automatically updates `proposal_mapping.csv` with AI reviewer names in `AI1_Reviewer` and `AI2_Reviewer` columns (GPT-4o and Llama-3.3-70B).
 5. **Randomize + anonymize**
    ```bash
    python3 generate_master_key.py
@@ -94,9 +96,10 @@ ai-review-for-590/
    ```
    - Validates each student has H1/H2/AI1/AI2.
    - Randomizes `Review_1–Review_4`, copies into `reviews_blinded/`.
+   - Populates `Reviewer_Name` column in `Master_Key.csv`: for H1/H2 files, reads reviewer names from `proposal_mapping.csv`; for AI1 files, sets to "gpt"; for AI2 files, sets to "llama".
    - Zips `feedback_packages/SXX_Feedback_Package.zip`.
-4. **Distribute** – upload each ZIP to Canvas or email via `Message Students Who…`.
-5. **(Optional) Quiz accuracy analysis**
+6. **Distribute** – upload each ZIP to Canvas or email via `Message Students Who…`.
+7. **(Optional) Quiz accuracy analysis**
    ```bash
    python3 analyze_quiz_results.py
    ```
@@ -160,8 +163,8 @@ docker run --rm \
 | File | Description |
 | --- | --- |
 | `students.csv` | `student_id,author_name` (auto-filled from metadata). |
-| `proposal_mapping.csv` | Links `Proposal_ID`, `Student_ID`, names, titles, filenames. |
-| `master_key.csv` | Randomized mapping of `Internal_Name` to public `Review_x`. Keep confidential. |
+| `proposal_mapping.csv` | Links `Proposal_ID`, `Student_ID`, names, titles, filenames. Also includes `H1_Reviewer`, `H2_Reviewer`, `AI1_Reviewer`, `AI2_Reviewer` columns that track who wrote each review. Human reviewers are automatically populated from the CSV's "Reviewer: First Name Last Name" column when running `process_peer_reviews_from_csv.py`. |
+| `master_key.csv` | Randomized mapping of `Internal_Name` to public `Review_x`, including `Reviewer_Name` column. For human reviews (H1/H2), `Reviewer_Name` is read from `proposal_mapping.csv`. For AI reviews, `Reviewer_Name` is "gpt" (AI1) or "llama" (AI2). Keep confidential. |
 | `reviews_blinded/SXX_Review_#.pdf` | Student-facing review files after shuffling. |
 | `feedback_packages/SXX_Feedback_Package.zip` | Deliverable ZIP containing four blinded PDFs. |
 | `rename_success.log` / `rename_errors.log` | Audit log for any missing files or rename issues. |
