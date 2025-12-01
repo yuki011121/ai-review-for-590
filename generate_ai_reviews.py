@@ -17,6 +17,8 @@ from pathlib import Path
 import json
 import csv
 import pandas as pd
+import random
+import re
 
 # Try to load from .env file if available
 try:
@@ -65,9 +67,15 @@ ABSOLUTE REQUIREMENTS - READ THIS FIRST:
 - Rate the potential impact/significance of the proposed research: Write ONLY the number 1, 2, 3, 4, or 5. DO NOT write "Low", "Moderate", "High", "Very High", or any other text.
 
 - Use PLAIN TEXT only - NO markdown formatting (no **, no #, no bullets, no numbered lists)
-- ABSOLUTELY NO HYPHENS ( - ) anywhere in your response unless it is part of a proper noun or technical term that officially requires it. This applies to every compound word and descriptive phrase. Always rewrite as separate words. Examples: "up to date" NOT "up-to-date", "well written" NOT "well-written", "state of the art" NOT "state-of-the-art".
-- ZERO-HYPHEN FINAL CHECK: Before you submit your response, scan what you wrote for the "-" character. If you find even one hyphen, rewrite that word or phrase with spaces so there are absolutely zero hyphens when you are done.
-- The ONLY exception is proper nouns or technical terms that MUST have hyphens (e.g., "ML-Agents" as a framework name)
+- ABSOLUTELY NO DASH CHARACTERS of any kind in your response, including:
+  * "-" (U+002D, hyphen-minus)
+  * "–" (U+2013, en dash)
+  * "—" (U+2014, em dash)
+  This applies to all words and phrases. If you would normally write "long-term", "state-of-the-art", or use an em dash for emphasis, you MUST rewrite using spaces or punctuation instead (for example: "long term", "state of the art", or a comma).
+- ZERO-DASH FINAL CHECK: Before you submit your response, scan what you wrote for "-", "–", and "—". If you find any of them, rewrite those parts so there are absolutely none of these characters in your final answer.
+- The ONLY exceptions are:
+  * Proper nouns or technical terms that MUST have a dash (e.g., "ML-Agents" as a framework name), and
+  * The leading "  - " marker at the start of explanation lines, which is required to match the Google Form format.
 - Match the exact structure of human peer reviews from Google Forms
 - Do NOT include section numbers, headers like "1.", "2.", etc., or any introductory text
 - Start directly with "General Impression & Summary:"
@@ -91,7 +99,7 @@ WRITING STYLE GUIDELINES (to sound more human):
 - Use natural transitions and varied sentence beginnings
 - Don't make every comment sound like a polished academic statement
 - Mix of specific technical comments and general observations with personal reactions
-- NEVER use hyphens to join words - always write them as separate words (e.g., "well thought out", "real world", "multi agent", "state of the art", "cutting edge", "well suited", "agent based", "reinforcement based", "real time", "cutting edge")
+- NEVER use dashes to join words - always write them as separate words (e.g., "well thought out", "real world", "multi agent", "state of the art", "cutting edge", "well suited", "agent based", "reinforcement based", "real time", "cutting edge")
 - If you need to describe something, use separate words: "agent based modeling" NOT "agent-based modeling", "well suited" NOT "well-suited"
 
 MANDATORY VALUE RESTRICTIONS (you MUST follow these exactly):
@@ -181,6 +189,129 @@ If you use any word instead of a number for these fields, your response is WRONG
 
 Remember: Write as a real graduate student would - use "I" and "you/your" naturally, express personal reactions and opinions, vary explanation length based on how interesting each section is to you. Don't make it sound like a polished academic paper. Keep it constructive but human and personal. Follow ALL value restrictions exactly for the ratings and options. For all rating fields (Title & Abstract Quality, Introduction & Motivation, Background & Related Work, Thesis Question / Hypothesis & Contribution, Methodology, Schedule, Clarity & Style, Formatting & References, and Impact/Significance), use ONLY integers 1-5, nothing else.
 """
+
+# Concise review prompt template - same structure/ratings, much shorter free-text explanations
+CONCISE_REVIEW_PROMPT_TEMPLATE = """You are a graduate student providing peer review feedback on a Master's thesis proposal. This time your review should be BRIEF, like a busy student who still gives quick but useful feedback.
+
+ABSOLUTE REQUIREMENTS - READ THIS FIRST:
+- You MUST follow all value and option restrictions exactly as in the standard detailed review:
+  * All rating fields (Title & Abstract Quality, Introduction & Motivation, Background & Related Work,
+    Thesis Question / Hypothesis & Contribution, Methodology, Schedule & Feasibility, Clarity & Style,
+    Formatting & References, and Impact/Significance) MUST be integers 1, 2, 3, 4, or 5.
+  * Overall Recommendation MUST be one of:
+      "Strongly Accept (No changes needed)",
+      "Accept (Minor revisions required)",
+      "Borderline (Major revisions required)",
+      "Reject (Fundamental issues)".
+  * Novelty/originality questions MUST use ONLY "Low", "Moderate", or "High".
+- Use PLAIN TEXT only - NO markdown formatting.
+- ABSOLUTELY NO DASH CHARACTERS of any kind in your response, including:
+  * "-" (U+002D, hyphen-minus)
+  * "–" (U+2013, en dash)
+  * "—" (U+2014, em dash)
+  This applies to all words and phrases. If you would normally write "long-term", "state-of-the-art", or use an em dash for emphasis, you MUST rewrite using spaces or punctuation instead (for example: "long term", "state of the art", or a comma).
+- ZERO-DASH FINAL CHECK: Before you submit your response, scan what you wrote for "-", "–", and "—". If you find any of them, rewrite those parts so there are absolutely none of these characters in your final answer.
+- The ONLY exception is proper nouns or technical terms that MUST have dashes (e.g., "ML-Agents" as a framework name). Do NOT use dashes anywhere else.
+
+CONCISE WRITING STYLE (VERY IMPORTANT):
+- This is a SHORT review. Keep free text very brief.
+- USE FIRST PERSON for reactions: "I think", "I found", "I liked".
+- USE SECOND PERSON when addressing the author: "your proposal", "your work".
+- For each explanation section, prefer:
+  * One short sentence or
+  * A few short phrases or
+  * A few words only, if that still feels natural.
+- It is OK to omit explanation lines entirely for some rating sections and only give the numeric rating.
+
+Format your response EXACTLY as follows:
+
+General Impression & Summary:
+[ONE short sentence or a few phrases only. Example: "Clear proposal on an important topic, mostly well organized."]
+
+Major Strengths:
+[A few phrases or ONE short sentence. Example: "Good clarity, solid motivation, clear research direction."]
+
+Key Areas for Improvement:
+[A few words or ONE short sentence. Example: "Expand validation plan and clarify data collection steps."]
+
+Title & Abstract Quality: [MUST be integer 1-5]
+  - [OPTIONAL: if you add text, keep it to a few words, for example "clear and specific". You may omit this line completely.]
+
+Introduction & Motivation: [MUST be integer 1-5]
+  - [OPTIONAL: at most a short phrase, for example "explains why the topic matters". You may omit this line completely.]
+
+Background & Related Work: [MUST be integer 1-5]
+  - [OPTIONAL: a short phrase, for example "covers main related work". You may omit this line completely.]
+
+Thesis Question / Hypothesis & Contribution: [MUST be ONLY integer 1, 2, 3, 4, or 5]
+  - [OPTIONAL: a short phrase, for example "contributions are mostly clear". You may omit this line completely.]
+
+Methodology, Design & Validation: [MUST be ONLY integer 1, 2, 3, 4, or 5]
+  - [OPTIONAL: a short phrase, for example "plan seems realistic". You may omit this line completely.]
+
+Schedule & Feasibility: [MUST be ONLY integer 1, 2, 3, 4, or 5]
+  - [OPTIONAL: a short phrase, for example "timeline looks reasonable". You may omit this line completely.]
+
+Clarity & Style: [MUST be ONLY integer 1, 2, 3, 4, or 5]
+  - [OPTIONAL: a short phrase, for example "easy to follow". You may omit this line completely.]
+
+Formatting & References: [MUST be ONLY integer 1, 2, 3, 4, or 5]
+  - [OPTIONAL: a short phrase, for example "minor format issues only". You may omit this line completely.]
+
+Overall Recommendation for the Proposal's Outcome: [MUST be one of: "Strongly Accept (No changes needed)", "Accept (Minor revisions required)", "Borderline (Major revisions required)", "Reject (Fundamental issues)"]
+
+Rate the potential impact/significance of the proposed research: [MUST be ONLY integer 1, 2, 3, 4, or 5]
+
+Assess the novelty and originality of the following aspects: [Research Question/Hypothesis]: [MUST be "Low", "Moderate", or "High"]
+
+Assess the novelty and originality of the following aspects: [Proposed Methodology]: [MUST be "Low", "Moderate", or "High"]
+
+Assess the novelty and originality of the following aspects: [Potential Contribution]: [MUST be "Low", "Moderate", or "High"]
+
+Additional Comments for the Author:
+[Either write "None." or ONE short sentence or a few words, for example "Looking forward to seeing the full thesis."]
+
+CRITICAL REMINDERS:
+- All rating and option rules from the standard prompt still apply.
+- You may shorten or omit explanation lines, but you MUST NOT change the required rating formats or allowed values.
+- Keep the overall length noticeably shorter than a normal, very detailed review.
+"""
+
+# Probability that a given student gets one detailed and one concise review (mixed style)
+# Example: 0.25 means 75% of students get two detailed reviews, 25% get one detailed + one concise
+BRIEF_REVIEW_PROBABILITY = 0.25
+
+# Characters we want to actively strip out from model output for safety
+# We treat ALL dash characters as forbidden inside normal text, including:
+# - "-" (U+002D, hyphen-minus)
+# - "–" (U+2013, en dash)
+# - "—" (U+2014, em dash)
+# The ONLY allowed dash is the one in the bullet marker "  - " at the start of explanation lines.
+FORBIDDEN_DASHES = ["-", "–", "—"]
+
+
+def remove_forbidden_dashes(text: str) -> str:
+    """
+    Remove forbidden dash characters from the text while preserving the required
+    Google Form-style bullet marker "  - " at the start of explanation lines.
+
+    Strategy:
+    1. Temporarily replace any leading "  - " (two spaces, dash, space) at the start
+       of a line with a placeholder token so it will not be touched.
+    2. Replace ALL occurrences of "-", "–", and "—" with a space.
+    3. Restore the placeholder back to "  - ".
+    """
+    # Step 1: protect bullet markers at the start of lines
+    placeholder = "<<BULLET_DASH_PLACEHOLDER>>"
+    text = re.sub(r"(^|\n)(  - )", rf"\1{placeholder}", text)
+
+    # Step 2: remove all dash characters everywhere else
+    text = re.sub(r"[-–—]", " ", text)
+
+    # Step 3: restore bullet markers
+    text = text.replace(placeholder, "  - ")
+
+    return text
 
 # --- End Configuration ---
 
@@ -472,21 +603,45 @@ def generate_reviews_for_student(student_id, proposal_path):
     
     print(f"  ✓ Extracted {len(proposal_text)} characters")
     
+    # Decide whether this student gets mixed style (one detailed, one concise)
+    use_brief_review = random.random() < BRIEF_REVIEW_PROBABILITY
+    if use_brief_review:
+        # Randomly choose which review (1 or 2) will use the concise prompt
+        brief_review_num = random.choice([1, 2])
+        print(f"  Using mixed style: review {brief_review_num} will use CONCISE prompt")
+    else:
+        brief_review_num = None
+        print("  Using detailed style for both AI reviews")
+    
     # Generate two reviews
     success_count = 0
     for review_num in [1, 2]:
         print(f"  Generating AI review {review_num}...")
         
+        # Choose which prompt template to use for this review
+        if use_brief_review and review_num == brief_review_num:
+            prompt_template = CONCISE_REVIEW_PROMPT_TEMPLATE
+            print("    Prompt style: CONCISE")
+        else:
+            prompt_template = REVIEW_PROMPT_TEMPLATE
+            print("    Prompt style: DETAILED")
+        
         review_text = call_ai_api(
-            REVIEW_PROMPT_TEMPLATE,
+            prompt_template,
             proposal_text,
             review_num,
             student_id
         )
-        
+
         if not review_text:
             print(f"  ✗ Failed to generate review {review_num}")
             continue
+
+        # Enforce removal of all forbidden dash characters as a safety net
+        cleaned_text = remove_forbidden_dashes(review_text)
+        if cleaned_text != review_text:
+            print("  ⚠ Removed dash characters (-, –, —) from review text (bullets preserved).")
+        review_text = cleaned_text
         
         # Save as PDF
         is_pdf, filepath = save_review_as_pdf(student_id, review_num, review_text, OUTPUT_DIR)

@@ -118,18 +118,7 @@ docker build -t ai-review .
 ### Run full pipeline inside container
 Starting from only `data/` + `csv/`:
 ```bash
-docker run --rm \
-  --env-file .env \
-  -v $(pwd):/app \
-  ai-review bash -c "
-    set -euo pipefail &&
-    python3 generate_student_and_mapping.py --start-index 1 --force &&
-    python3 process_peer_reviews_from_csv.py &&
-    printf 'y\n' | python3 generate_ai_reviews.py &&
-    python3 generate_master_key.py &&
-    ./rename_and_distribute.sh &&
-    ./create_packages.sh
-  "
+docker run --rm --env-file .env -v "$(pwd):/app" ai-review bash -c "set -euo pipefail && python3 generate_student_and_mapping.py --start-index 1 --force && python3 process_peer_reviews_from_csv.py && printf 'y\n' | python3 generate_ai_reviews.py && python3 generate_master_key.py && ./rename_and_distribute.sh && ./create_packages.sh"
 ```
 This one-liner reproduces the entire pipeline: metadata → human PDFs → AI PDFs → Master Key → rename → ZIPs. The host folders `reviews_original/`, `reviews_blinded/`, and `feedback_packages/` must already exist (empty is fine); the command overwrites `students.csv`, `proposal_mapping.csv`, and `Master_Key.csv`.
 
