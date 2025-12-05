@@ -7,13 +7,14 @@
 TARGET_DIR="./reviews_blinded"
 PACKAGES_DIR="./feedback_packages"
 STUDENTS_CSV="./students.csv"
+MAPPING_CSV="./proposal_mapping.csv"
 
 # Create packages directory
 mkdir -p "$PACKAGES_DIR"
 
-# Validate students.csv exists
-if [ ! -f "$STUDENTS_CSV" ]; then
-    echo "ERROR: Students CSV file not found: $STUDENTS_CSV"
+# Validate at least one CSV file exists
+if [ ! -f "$STUDENTS_CSV" ] && [ ! -f "$MAPPING_CSV" ]; then
+    echo "ERROR: Neither students.csv nor proposal_mapping.csv found"
     exit 1
 fi
 
@@ -27,9 +28,21 @@ echo ""
 # Function to get student name in Last-First format
 get_student_name() {
     local student_id=$1
-    # Read students.csv, skip header, find matching student_id
-    # Handle Windows line endings (\r\n) by converting to Unix format
-    local author_name=$(tail -n +2 "$STUDENTS_CSV" | tr -d '\r' | awk -F',' -v id="$student_id" '$1==id {print $2}' | xargs)
+    local author_name=""
+    
+    # Method 1: Try reading from students.csv first (preferred source)
+    if [ -f "$STUDENTS_CSV" ]; then
+        # Read students.csv, skip header, find matching student_id
+        # Handle Windows line endings (\r\n) by converting to Unix format
+        author_name=$(tail -n +2 "$STUDENTS_CSV" | tr -d '\r' | awk -F',' -v id="$student_id" '$1==id {print $2}' | xargs)
+    fi
+    
+    # Method 2: Fallback to proposal_mapping.csv if students.csv is empty or doesn't exist
+    if [ -z "$author_name" ] && [ -f "$MAPPING_CSV" ]; then
+        # proposal_mapping.csv format: Proposal_ID,Student_ID,Author_Name,Proposal_Title,...
+        # Match Student_ID (column 2) and get Author_Name (column 3)
+        author_name=$(tail -n +2 "$MAPPING_CSV" | tr -d '\r' | awk -F',' -v id="$student_id" '$2==id {print $3}' | head -1 | xargs)
+    fi
     
     if [ -z "$author_name" ]; then
         echo ""
@@ -59,7 +72,7 @@ for student_id in $STUDENT_IDS; do
     STUDENT_NAME=$(get_student_name "$student_id")
     
     if [ -z "$STUDENT_NAME" ]; then
-        echo "⚠ Warning: No name found for $student_id in $STUDENTS_CSV, using student_id"
+        echo "⚠ Warning: No name found for $student_id in students.csv or proposal_mapping.csv, using student_id"
         STUDENT_NAME="$student_id"
     fi
     

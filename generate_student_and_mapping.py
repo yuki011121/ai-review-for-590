@@ -120,6 +120,53 @@ def normalize_value(value: str) -> str:
     return re.sub(r"[^a-z0-9]", "", value.lower())
 
 
+def extract_text_from_pdf(pdf_path: Path) -> Optional[str]:
+    """Extract text from PDF file for title matching"""
+    try:
+        import PyPDF2
+        with pdf_path.open('rb') as file:
+            reader = PyPDF2.PdfReader(file)
+            text = ""
+            # Only extract first 2 pages (title is usually on first page)
+            for i, page in enumerate(reader.pages[:2]):
+                text += page.extract_text() + "\n"
+        return text
+    except ImportError:
+        try:
+            import pdfplumber
+            with pdfplumber.open(pdf_path) as pdf:
+                text = ""
+                for i, page in enumerate(pdf.pages[:2]):
+                    text += page.extract_text() + "\n"
+            return text
+        except ImportError:
+            return None
+    except Exception:
+        return None
+
+
+def extract_title_from_pdf(pdf_path: Path) -> Optional[str]:
+    """Extract proposal title from PDF content (first page, look for title-like text)"""
+    text = extract_text_from_pdf(pdf_path)
+    if not text:
+        return None
+    
+    # Try to find title - usually the first large line or line with "Title" keyword
+    lines = text.split('\n')
+    for line in lines[:30]:  # Check first 30 lines
+        line = line.strip()
+        # Reasonable title length and not too short
+        if len(line) > 10 and len(line) < 200:
+            # Skip common headers/footers
+            skip_keywords = ['page', 'date', 'author', 'abstract', 'table of', 'contents', 
+                           'university', 'department', 'submitted', 'copyright']
+            if not any(skip in line.lower() for skip in skip_keywords):
+                # Prefer lines that look like titles (not all caps, has some structure)
+                if not line.isupper() or len(line.split()) <= 5:
+                    return line
+    return None
+
+
 def load_metadata(
     csv_path: Path,
     id_column: str,
@@ -155,20 +202,59 @@ def load_metadata(
     return metadata
 
 
-def match_metadata(stem: str, metadata: Dict[str, MetadataRecord]) -> Optional[MetadataRecord]:
+def match_metadata(pdf_path: Path, metadata: Dict[str, MetadataRecord]) -> Optional[MetadataRecord]:
+    """Match PDF to metadata by filename or PDF content"""
     if not metadata:
         return None
-
+    
+    stem = pdf_path.stem
+    
+    # Method 1: Try matching by filename (normalized) - backward compatible
     normalized_title = normalize_value(stem)
     if normalized_title in metadata:
         return metadata[normalized_title]
-
+    
+    # Method 2: Try matching by Proposal ID in filename
     match = re.search(r"(P\d+)", stem, re.IGNORECASE)
     if match:
         meta = metadata.get(f"id:{match.group(1).lower()}")
         if meta:
             return meta
-
+    
+    # Method 3: Extract title from PDF content and match (new feature)
+    pdf_title = extract_title_from_pdf(pdf_path)
+    if pdf_title:
+        normalized_pdf_title = normalize_value(pdf_title)
+        # Exact match with PDF content title
+        if normalized_pdf_title in metadata:
+            print(f"  ✓ Matched {pdf_path.name} by PDF content title: {pdf_title[:60]}...")
+            return metadata[normalized_pdf_title]
+        
+        # Partial match - check if any metadata title is contained in PDF title or vice versa
+        for key, record in metadata.items():
+            if key.startswith("id:"):  # Skip ID keys
+                continue
+            # Check if normalized PDF title contains normalized metadata title (or vice versa)
+            if normalized_pdf_title in key or key in normalized_pdf_title:
+                print(f"  ✓ Matched {pdf_path.name} by partial title match: {pdf_title[:60]}...")
+                return record
+            # Try word-based matching using original titles (before normalization)
+            # Extract words from original titles for better matching
+            pdf_words = set(re.findall(r'\b[a-z0-9]+\b', pdf_title.lower()))
+            # Get original title from metadata record
+            original_meta_title = record.proposal_title.lower()
+            meta_words = set(re.findall(r'\b[a-z0-9]+\b', original_meta_title))
+            # Filter out common stop words
+            stop_words = {'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by'}
+            pdf_words = pdf_words - stop_words
+            meta_words = meta_words - stop_words
+            if pdf_words and meta_words:
+                common_words = pdf_words & meta_words
+                match_ratio = len(common_words) / min(len(pdf_words), len(meta_words))
+                if match_ratio >= 0.5:  # At least 50% word overlap
+                    print(f"  ✓ Matched {pdf_path.name} by word-based match: {pdf_title[:60]}...")
+                    return record
+    
     return None
 
 
@@ -215,7 +301,8 @@ def build_records(
         proposal_candidate = f"{proposal_prefix}{index:03d}"
         proposal_id = extract_proposal_id(stem, proposal_candidate)
 
-        meta = match_metadata(stem, metadata)
+        # Pass PDF path instead of stem for content extraction
+        meta = match_metadata(pdf, metadata)
         author_name = meta.author_name if meta else ""
         proposal_title = meta.proposal_title if meta and meta.proposal_title else pdf.stem
         if meta and meta.proposal_id:
